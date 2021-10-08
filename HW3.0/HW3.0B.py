@@ -16,9 +16,21 @@ IPLOT=True
 
 
 PARADIGM = 'batch'
-model_type = "linear"
-NFIT = 6
+model_type = "ANN"
 data_raw = 'mpg.csv'
+
+algo 		=	"MOM"	#GD OR MOM
+LR 			=	0.1  	#LEARNING RATE
+dx 			=	0.0001	#STEP SIZE FOR FINITE DIFFERENCE
+max_iter 	=	100	#MAX NUMBER OF ITERATION
+tol 		= 	10**-10	#EXIT AFTER CHANGE IN LOSS IS LESS THAN THIS 
+max_rand_wb	=	1.0 	#MAX FOR RANDOM INITIAL GUESS
+GAMMA_L1	=	0.0		#L1 REGULARIZATION CONSTANT
+GAMMA_L2	=	0.01	#L2 REGULARIZATION CONSTANT
+alpha		=	0.25	#MOMENTUM PARAMETER
+#ANN PARAM
+layers		=	[-1,5,5,5,1] #FIRST NUMBER OVERWRITTEN LATER BY INPUT SHAPE
+activation	=	"TANH"	#SIGMOID OR TAHN
 
 
 column_names =['mpg','cylinders','displacement','horsepower','weight','acceleration','model_year','origin','name']
@@ -32,7 +44,6 @@ y_cols = ['mpg']
 
 X = df[x_cols].to_numpy()
 Y = df[y_cols].to_numpy()
-
 
 print('--------INPUT INFO-----------')
 
@@ -53,16 +64,29 @@ for i in range(0, len(X)):
 X = np.array(xtmp)
 Y = np.array(ytmp)
 
+
+
+#TAKE MEAN AND STD DOWN COLUMNS (I.E DOWN SAMPLE DIMENSION)
+XMEAN=np.mean(X,axis=0); XSTD=np.std(X,axis=0) 
+YMEAN=np.mean(Y,axis=0); YSTD=np.std(Y,axis=0) 
+
+#TAKE MEAN AND STD DOWN COLUMNS (I.E DOWN SAMPLE DIMENSION)
+
+X=(X-XMEAN)/XSTD;  Y=(Y-YMEAN)/YSTD  
+
+if(model_type=="ANN"):
+    layers[0] =	 X.shape[1]  	#OVERWRITE WITH INPUT SIZE
+	#CALCULATE NUMBER OF FITTING PARAMETERS FOR SPECIFIED NN 
+    NFIT=0; 
+    for i in range(1,len(layers)):  
+      NFIT=NFIT+layers[i-1]*layers[i]+layers[i]
+    print("NFIT	:",NFIT)
 print('--------NO NAN INFO-----------')
 
 print("x:", X)
 print("Y:", Y)
 print("X shape:", X.shape)
 print("Y shape:", Y.shape, '\n')
-
-#TAKE MEAN AND STD DOWN COLUMNS (I.E DOWN SAMPLE DIMENSION)
-XMEAN=np.mean(X,axis=0); XSTD=np.std(X,axis=0) 
-YMEAN=np.mean(Y,axis=0); YSTD=np.std(Y,axis=0) 
 
 # #NORMALIZE
 # X=(X-XMEAN)/XSTD;  Y=(Y-YMEAN)/YSTD
@@ -98,19 +122,56 @@ def model(x,p):
 	if(model_type=="logistic"): 
 		return  p[0]+p[1]*(1.0/(1.0+np.exp(-(x-p[2])/(p[3]+0.0001))))
 	if(model_type=="ANN"): 
-		return  build_ann_model()
+		return  build_ann_model(x, p)
 
-from keras import models
-from keras import layers
-def build_ann_model():
-    model = models.Sequential()
-    model.add(layers.Dense(64, activation='relu',
-    input_shape=(X.shape[1],)))
-    model.add(layers.Dense(64, activation='relu'))
-    model.add(layers.Dense(1))
-    model.compile(optimizer='rmsprop', loss='mse', metrics=['mae'])
-    return model
 
+def extract_submatrices(WB):
+    submatrices=[]
+    K=0
+    for i in range(0,len(layers)-1):
+       nrow = layers[i+1]
+       ncol = layers[i]
+       w=np.array(WB[K:K+nrow*ncol].reshape(ncol,nrow).T) 
+       K=K+nrow*ncol; 
+       nrow=layers[i+1]
+       ncol=1
+       b=np.transpose(np.array([WB[K:K+nrow*ncol]])) 
+       K=K+nrow*ncol; 
+       submatrices.append(w)
+       submatrices.append(b)
+
+    return submatrices
+
+##AN
+def T(x): return (np.exp(x)-np.exp(-x))/(np.exp(x)+np.exp(-x))
+
+def build_ann_model(x, p):
+    mat=extract_submatrices(p)
+    
+    return NN_eval(x, mat)
+    # model = models.Sequential()
+    # model.add(layers.Dense(64, activation='relu',
+    # input_shape=(X.shape[1],)))
+    # model.add(layers.Dense(64, activation='relu'))
+    # model.add(layers.Dense(1))
+    # model.compile(optimizer='rmsprop', loss='mse', metrics=['mae'])
+    # return model
+def NN_eval(x,mat):
+    out=[i for i in range(len(x))]
+    #print(mat[5],len(x))
+    for i in range(len(x)):
+       # print(i)
+        for j in range(len(mat)):
+            #print(j,x[j],len(y),len(mat),len(x))
+            
+            y=T(np.dot(mat[j*2],x[j].reshape(5,1))+mat[j*2+1])
+            
+            if len(y)==1:
+                break
+            
+        out[i]=y
+    #print(len(out))
+    return out
 #FUNCTION TO MAKE VARIOUS PREDICTIONS FOR GIVEN PARAMETERIZATION
 def predict(p):
 	global YPRED_T,YPRED_V,YPRED_TEST,MSE_T,MSE_V
@@ -124,9 +185,15 @@ def predict(p):
 #LOSS FUNCTION
 #------------------------
 def loss(p,index_2_use):
-	errors=model(X[index_2_use],p)-Y[index_2_use]  #VECTOR OF ERRORS
-	training_loss=np.mean(errors**2.0)				#MSE
-	return training_loss
+    errors=model(X[index_2_use],p)-Y[index_2_use] 
+    out=np.mean(errors**2.0)	
+    if model_type=="ANN":      			
+      if(GAMMA_L1!=0.0):
+          out=out+GAMMA_L1*np.sum(np.absolute(p))
+      if(GAMMA_L2!=0.0):
+          out=out+GAMMA_L2*np.sum(p**2.0)
+
+    return out 
 
 #------------------------
 #MINIMIZER FUNCTION
@@ -139,9 +206,6 @@ def minimizer(f,xi, algo='GD', LR=0.01):
 
 	#PARAM
 	iteration=1			#ITERATION COUNTER
-	dx=0.0001			#STEP SIZE FOR FINITE DIFFERENCE
-	max_iter=5000		#MAX NUMBER OF ITERATION
-	tol=10**-10			#EXIT AFTER CHANGE IN F IS LESS THAN THIS 
 	NDIM=len(xi)		#DIMENSION OF OPTIIZATION PROBLEM
 
 	#OPTIMIZATION LOOP
@@ -203,8 +267,8 @@ def minimizer(f,xi, algo='GD', LR=0.01):
 #------------------------
 
 #RANDOM INITIAL GUESS FOR FITTING PARAMETERS
-po=np.random.uniform(2,1.,size=NFIT)
-
+# po=np.random.uniform(2,1.,size=NFIT)
+po=np.random.uniform(-max_rand_wb,max_rand_wb,size=NFIT)
 #TRAIN MODEL USING SCIPY MINIMIZ 
 p_final=minimizer(loss,po)		
 print("OPTIMAL PARAM:",p_final)
@@ -230,7 +294,7 @@ def plot_1(xcol=1, xla='x',yla='y'):
 	ax.plot(X[train_idx][:, xcol], Y[train_idx],'o', label='Training')
 	ax.plot(X[val_idx][:, xcol], Y[val_idx],'x', label='Validation')
 	ax.plot(X[test_idx][:, xcol], Y[test_idx],'*', label='Test')
-	ax.plot(X[train_idx][:, xcol], YPRED_T,'.', label='Model')
+	# ax.plot(X[train_idx][:, xcol], YPRED_T,'.', label='Model')
 	plt.xlabel(xla, fontsize=18);	plt.ylabel(yla, fontsize=18); 	plt.legend()
 	plt.show()
 
@@ -247,21 +311,19 @@ if(IPLOT):
 
 	plot_0()
 
-	i = 0
-	for i in range(len(x_cols)):
-		plot_1(i,x_cols[i],y_cols[0])
-
-
-
 	#UNNORMALIZE RELEVANT ARRAYS
 	X=XSTD*X+XMEAN 
 	Y=YSTD*Y+YMEAN 
 	YPRED_T=YSTD*YPRED_T+YMEAN 
 	YPRED_V=YSTD*YPRED_V+YMEAN 
 	YPRED_TEST=YSTD*YPRED_TEST+YMEAN 
+	i = 0
+	for i in range(len(x_cols)):
+		plot_1(i,x_cols[i],y_cols[0])
 
-	plot_1()
-	plot_2()
+
+
+	# plot_2()
 
 
 
